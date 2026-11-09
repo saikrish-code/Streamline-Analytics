@@ -1,0 +1,60 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: Cleaned customer records from the Olist raw zone.
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: customer_unique_id
+        tests: [not_null]
+  - name: stg_orders
+    description: Cleaned order headers with parsed lifecycle timestamps.
+    columns:
+      - name: order_id
+        tests: [not_null, unique]
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+  - name: stg_order_items
+    description: Cleaned order-item rows, at one row per order item.
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_orders')
+              field: order_id
+      - name: order_item_id
+        tests: [not_null]
+  - name: stg_payments
+    description: Cleaned payment installments by order.
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_orders')
+              field: order_id
+  - name: stg_reviews
+    description: Cleaned customer review records.
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_orders')
+              field: order_id
+  - name: stg_products
+    description: Cleaned product descriptions and physical attributes.
+    columns:
+      - name: product_id
+        tests: [not_null, unique]
+  - name: stg_streaming_events
+    description: Cleaned event envelope from raw Kafka events.
+    columns:
+      - name: event_id
+        tests: [not_null, unique]

@@ -16,4 +16,11 @@ clean-targets: ["target", "dbt_packages"]
 models:
   streamline_analytics:
     staging:
+      +schema: staging
       +materialized: view
+    intermediate:
+      +schema: intermediate
+      +materialized: view
+    marts:
+      +schema: marts
+      +materialized: table

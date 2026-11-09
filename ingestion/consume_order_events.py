@@ -13,23 +13,9 @@ from sqlalchemy import create_engine, text
 
 from ingestion.kafka_config import kafka_settings
 from ingestion.load_olist import database_url
+from ingestion.schema import metadata
 
 logger = logging.getLogger("order_event_consumer")
-CREATE_TABLE = """
-CREATE TABLE IF NOT EXISTS raw.streaming_events (
-    event_id text PRIMARY KEY,
-    event_type text NOT NULL,
-    event_timestamp timestamptz NOT NULL,
-    order_id text NOT NULL,
-    payload jsonb NOT NULL,
-    kafka_topic text NOT NULL,
-    kafka_partition integer NOT NULL,
-    kafka_offset bigint NOT NULL,
-    kafka_timestamp timestamptz,
-    ingested_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (kafka_topic, kafka_partition, kafka_offset)
-)
-"""
 INSERT_EVENT = text("""
 INSERT INTO raw.streaming_events (
     event_id, event_type, event_timestamp, order_id, payload,
@@ -62,7 +48,7 @@ def main() -> None:
     try:
         with engine.begin() as connection:
             connection.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
-            connection.execute(text(CREATE_TABLE))
+        metadata.create_all(engine)
 
         while True:
             polled = consumer.poll(timeout_ms=1000)

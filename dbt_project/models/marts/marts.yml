@@ -1,0 +1,51 @@
+version: 2
+
+models:
+  - name: dim_customers
+    description: Customer dimension at customer_unique_id grain, using the latest observed profile.
+    columns:
+      - name: customer_unique_id
+        tests: [not_null, unique]
+  - name: dim_products
+    description: Product dimension at product_id grain.
+    columns:
+      - name: product_id
+        tests: [not_null, unique]
+  - name: dim_date
+    description: Calendar dimension spanning the order purchase dates.
+    columns:
+      - name: date_key
+        tests: [not_null, unique]
+      - name: date_day
+        tests: [not_null, unique]
+  - name: fact_orders
+    description: Order-item fact at one row per order_id and order_item_id; item measures are additive.
+    columns:
+      - name: order_line_key
+        tests: [not_null, unique]
+      - name: order_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('int_orders_enriched')
+              field: order_id
+      - name: order_item_id
+        tests: [not_null]
+      - name: customer_unique_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_customers')
+              field: customer_unique_id
+      - name: product_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_products')
+              field: product_id
+      - name: date_key
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_key

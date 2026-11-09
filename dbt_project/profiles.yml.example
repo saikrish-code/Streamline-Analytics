@@ -3,10 +3,10 @@ streamline_analytics:
   outputs:
     dev:
       type: postgres
-      host: localhost
-      user: streamline
-      password: streamline_local
-      port: 5432
-      dbname: streamline
-      schema: analytics
+      host: "{{ env_var('POSTGRES_HOST', 'localhost') }}"
+      user: "{{ env_var('POSTGRES_USER', 'streamline') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD', 'streamline_local') }}"
+      port: "{{ env_var('POSTGRES_PORT', '5432') | int }}"
+      dbname: "{{ env_var('POSTGRES_DB', 'streamline') }}"
+      schema: public
       threads: 4

@@ -1,6 +1,19 @@
 """Olist source-file to raw PostgreSQL table definitions."""
 
-from sqlalchemy import BigInteger, Column, Integer, MetaData, Numeric, String, Table, Text
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    DateTime,
+    func,
+    Integer,
+    MetaData,
+    Numeric,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 
 RAW_SCHEMA = "raw"
 metadata = MetaData(schema=RAW_SCHEMA)
@@ -67,6 +80,27 @@ TABLES = {
         Column("product_width_cm", BigInteger),
     ),
 }
+
+STREAMING_EVENTS = Table(
+    "streaming_events",
+    metadata,
+    Column("event_id", String(64), primary_key=True),
+    Column("event_type", String(64), nullable=False),
+    Column("event_timestamp", DateTime(timezone=True), nullable=False),
+    Column("order_id", String(64), nullable=False),
+    Column("payload", JSONB, nullable=False),
+    Column("kafka_topic", Text, nullable=False),
+    Column("kafka_partition", Integer, nullable=False),
+    Column("kafka_offset", BigInteger, nullable=False),
+    Column("kafka_timestamp", DateTime(timezone=True)),
+    Column("ingested_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    UniqueConstraint(
+        "kafka_topic",
+        "kafka_partition",
+        "kafka_offset",
+        name="uq_streaming_events_kafka_offset",
+    ),
+)
 
 CSV_FILES = {
     "customers": "olist_customers_dataset.csv",

@@ -1,0 +1,40 @@
+version: 2
+
+models:
+  - name: int_customers_deduplicated
+    description: One latest observed customer profile per customer_unique_id.
+    columns:
+      - name: customer_unique_id
+        tests: [not_null, unique]
+  - name: int_order_items_aggregated
+    description: Order-level rollup of item counts, item value, and freight.
+    columns:
+      - name: order_id
+        tests: [not_null, unique]
+  - name: int_payments_aggregated
+    description: Order-level rollup of payment value and installments.
+    columns:
+      - name: order_id
+        tests: [not_null, unique]
+  - name: int_reviews_deduplicated
+    description: One deterministic latest review record per order.
+    columns:
+      - name: order_id
+        tests: [not_null]
+  - name: int_orders_enriched
+    description: One row per order joined to pre-aggregated items, payments, and deduplicated reviews.
+    columns:
+      - name: order_id
+        tests: [not_null, unique]
+      - name: customer_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      - name: customer_unique_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('int_customers_deduplicated')
+              field: customer_unique_id
