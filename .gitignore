@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+target/
+data/raw/
+dbt_project/target/
+dbt_project/dbt_packages/
+logs/

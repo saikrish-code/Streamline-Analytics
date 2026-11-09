@@ -1,0 +1,12 @@
+streamline_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: localhost
+      user: streamline
+      password: streamline_local
+      port: 5432
+      dbname: streamline
+      schema: analytics
+      threads: 4
