@@ -84,3 +84,7 @@ KAFKA_PASSWORD=<your-upstash-kafka-password>
 ```
 
 Both the producer and consumer use these settings. Keep credentials in `.env` and never commit that file. Upstash's Kafka protocol uses SASL authentication; the cluster console provides the actual endpoint and credentials. See [Upstash's Kafka connection example](https://upstash.com/blog/kafka-spark).
+
+## Analytics dashboard
+
+The Next.js App Router dashboard lives in [`dashboard/`](dashboard/README.md). It reads the `marts` schema through the Neon serverless Postgres driver, calls the churn FastAPI service for customer risk scores, and refreshes its indexed materialized views with a six-hour Vercel Cron schedule. Configure `dashboard/.env.local`, run `dbt run`, apply `dashboard/sql/dashboard_views.sql`, then start the dashboard with `npm run dev` from `dashboard/`. Vercel deployment and the Hobby cron cadence caveat are documented in the dashboard README.
