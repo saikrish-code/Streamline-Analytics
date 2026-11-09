@@ -23,9 +23,15 @@ orchestration = [
   "dagster>=1.10,<2.0",
   "dagster-webserver>=1.10,<2.0",
 ]
+api = [
+  "fastapi>=0.115,<1.0",
+  "uvicorn[standard]>=0.30,<1.0",
+  "scikit-learn>=1.5,<2.0",
+  "joblib>=1.4,<2.0",
+]
 
 [tool.setuptools.packages.find]
-include = ["ingestion*", "quality*", "orchestration*"]
+include = ["ingestion*", "quality*", "orchestration*", "api*"]
 
 [tool.ruff]
 line-length = 100

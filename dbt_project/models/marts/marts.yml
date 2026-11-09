@@ -49,3 +49,21 @@ models:
           - relationships:
               to: ref('dim_date')
               field: date_key
+  - name: fact_reviews
+    description: Latest review per order, linked to the cross-order customer identifier.
+    columns:
+      - name: review_id
+        tests: [not_null]
+      - name: order_id
+        tests:
+          - not_null
+          - unique
+          - relationships:
+              to: ref('int_orders_enriched')
+              field: order_id
+      - name: customer_unique_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_customers')
+              field: customer_unique_id

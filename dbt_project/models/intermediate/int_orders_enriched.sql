@@ -17,6 +17,8 @@ select
     payments.installment_count,
     reviews.review_id,
     reviews.review_score,
+    reviews.review_comment_title,
+    reviews.review_comment_message,
     reviews.review_created_at,
     reviews.review_answered_at,
     coalesce(items.item_order_total, payments.payment_total) as order_total

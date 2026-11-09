@@ -46,6 +46,10 @@ The profile defaults match the local Compose credentials. For other credentials,
 
 Dagster defines a daily batch asset chain and a five-minute bounded streaming consumer/dbt chain. See [orchestration/README.md](orchestration/README.md) for local startup and Railway/Render persistent-volume setup. The root [Dockerfile](Dockerfile) packages the Dagster UI, daemon, ingestion, quality, and dbt dependencies.
 
+## Customer churn model and API
+
+Train the versioned churn classifier from dbt marts with `python -m api.churn.train --version 1.0.0`, then deploy the FastAPI service using [api/Dockerfile](api/Dockerfile). Feature definitions, model versioning, and `/predict` and `/health` usage are documented in [api/README.md](api/README.md).
+
 ## Stream synthetic order events
 
 Local Redpanda starts with Postgres through Compose. In one terminal, start the services and create the topic:
