@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -44,16 +45,37 @@ def main() -> None:
         max_poll_records=int(os.getenv("KAFKA_MAX_POLL_RECORDS", "500")),
         value_deserializer=lambda value: json.loads(value.decode("utf-8")),
     )
+    max_messages = int(os.getenv("KAFKA_MAX_MESSAGES", "0"))
+    idle_timeout = float(os.getenv("KAFKA_IDLE_TIMEOUT_SECONDS", "0"))
+    max_runtime = float(os.getenv("KAFKA_MAX_RUNTIME_SECONDS", "0"))
+    if max_messages < 0 or idle_timeout < 0 or max_runtime < 0:
+        consumer.close()
+        raise ValueError("Kafka max messages, idle timeout, and max runtime must be non-negative")
     engine = create_engine(database_url(), pool_pre_ping=True)
     try:
         with engine.begin() as connection:
             connection.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
         metadata.create_all(engine)
 
+        started_at = time.monotonic()
+        last_message_at = started_at
+        processed = 0
         while True:
-            polled = consumer.poll(timeout_ms=1000)
+            remaining = max_messages - processed if max_messages else None
+            if remaining is not None and remaining <= 0:
+                break
+            poll_limit = int(os.getenv("KAFKA_MAX_POLL_RECORDS", "500"))
+            polled = consumer.poll(
+                timeout_ms=1000,
+                max_records=min(poll_limit, remaining) if remaining is not None else poll_limit,
+            )
             records = [record for partition_records in polled.values() for record in partition_records]
             if not records:
+                current_time = time.monotonic()
+                if idle_timeout and current_time - last_message_at >= idle_timeout:
+                    break
+                if max_runtime and current_time - started_at >= max_runtime:
+                    break
                 continue
             inserted = 0
             with engine.begin() as connection:
@@ -82,7 +104,12 @@ def main() -> None:
                     )
                     inserted += result.rowcount
             consumer.commit()
+            processed += len(records)
+            last_message_at = time.monotonic()
             logger.info("Persisted %d of %d consumed events", inserted, len(records))
+            if max_runtime and time.monotonic() - started_at >= max_runtime:
+                break
+        logger.info("Consumer stopped after processing %d events", processed)
     finally:
         consumer.close()
         engine.dispose()

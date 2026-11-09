@@ -19,9 +19,13 @@ dependencies = [
 dev = ["ruff>=0.5,<1.0"]
 dbt = ["dbt-postgres>=1.8,<2.0"]
 quality = ["great_expectations>=1.24,<2.0"]
+orchestration = [
+  "dagster>=1.10,<2.0",
+  "dagster-webserver>=1.10,<2.0",
+]
 
 [tool.setuptools.packages.find]
-include = ["ingestion*"]
+include = ["ingestion*", "quality*", "orchestration*"]
 
 [tool.ruff]
 line-length = 100

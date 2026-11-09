@@ -42,6 +42,10 @@ dbt build --project-dir dbt_project --profiles-dir dbt_project
 
 The profile defaults match the local Compose credentials. For other credentials, define the `POSTGRES_*` environment variables in the shell running dbt; dbt does not automatically load the root `.env` file. The marts use an order-item grain for `fact_orders` so `dim_products`, `dim_customers`, and `dim_date` join cleanly without hiding multi-product orders. Item price and freight measures are additive; order totals are checked in the intermediate order model to avoid repeating an order-level amount on every item line. Schema tests cover key uniqueness, non-null keys, and dimension relationships. Singular tests check positive totals, positive order-line values, and legal streaming status transitions.
 
+## Dagster orchestration
+
+Dagster defines a daily batch asset chain and a five-minute bounded streaming consumer/dbt chain. See [orchestration/README.md](orchestration/README.md) for local startup and Railway/Render persistent-volume setup. The root [Dockerfile](Dockerfile) packages the Dagster UI, daemon, ingestion, quality, and dbt dependencies.
+
 ## Stream synthetic order events
 
 Local Redpanda starts with Postgres through Compose. In one terminal, start the services and create the topic:
