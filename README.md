@@ -1,90 +1,158 @@
 # Streamline Analytics
 
-A modular Python data pipeline starter built around the Olist Brazilian E-Commerce Public Dataset.
+An end-to-end Olist Brazilian E-Commerce analytics pipeline. It loads source CSVs to PostgreSQL, ingests live order events, validates raw data, transforms it with dbt, orchestrates batch and streaming work with Dagster, trains a versioned churn classifier, and serves an analytics dashboard.
 
-## Project layout
+## Architecture
 
-```text
-ingestion/       Dataset download and Postgres raw-zone loading
-dbt_project/     dbt transformation project scaffold
-orchestration/   Workflow entry points and orchestration scaffold
-quality/         Data quality checks scaffold
-api/             API scaffold
-dashboard/       Dashboard scaffold
-data/raw/        Local source CSVs (ignored by Git)
+```mermaid
+flowchart LR
+  Olist[Olist CSV dataset] --> Loader[Python / SQLAlchemy loader]
+  Loader --> Raw[(Postgres raw schema)]
+  Producer[Synthetic order-event producer] --> Kafka[Redpanda / Kafka]
+  Kafka --> Consumer[Event consumer]
+  Consumer --> Events[(raw.streaming_events)]
+  Raw --> GE[Great Expectations raw gate]
+  Events --> GE
+  GE --> Stg[dbt staging]
+  Stg --> Int[dbt intermediate]
+  Int --> Marts[(dbt marts schema)]
+  Dagster[Dagster schedules and assets] -. orchestrates .-> Loader
+  Dagster -. orchestrates .-> GE
+  Dagster -. orchestrates .-> Stg
+  Marts --> Trainer[Weekly scikit-learn training]
+  Trainer --> Registry[Versioned churn model]
+  Registry --> ChurnAPI[FastAPI /predict]
+  Marts --> ReadModels[(Dashboard materialized views)]
+  ChurnAPI --> Next[Next.js dashboard]
+  ReadModels --> Next
+  Vercel[Vercel Cron] --> Refresh[/api/refresh/]
+  Refresh --> ReadModels
+  GH[GitHub Actions] --> CI[PR: GE, dbt and pytest]
+  GH --> Trainer
 ```
 
-## Get the data
+### Components
 
-The source dataset is published on [Kaggle](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce). Download and unzip it into `data/raw/`, keeping the CSV filenames intact. Kaggle may require an account and API credentials. The loader checks for the six required files before loading. The public dataset also includes sellers, geolocation, and product category translation CSVs; this first raw model focuses on orders, customers, order items, payments, reviews, and products.
+| Path | Responsibility |
+| --- | --- |
+| `ingestion/` | Olist CSV loading, synthetic Kafka producer, and idempotent Postgres event consumer |
+| `quality/` | Great Expectations raw-schema, null-rate, and event-freshness checkpoint |
+| `dbt_project/` | Staging and intermediate cleaning plus dimensional marts (`fact_orders`, `fact_reviews`, and dimensions) |
+| `orchestration/` | Dagster daily batch pipeline and five-minute streaming pipeline |
+| `api/` | Churn feature engineering, scikit-learn training/model registry, and FastAPI prediction service |
+| `dashboard/` | Next.js App Router UI, analytics API routes, indexed dashboard materialized views, and Vercel Cron |
+| `.github/workflows/` | Pull-request data/quality CI, Python unit tests, weekly retrain and Render deployment |
 
-The six source CSVs are expected to use the Olist headers documented in `ingestion/schema.py`. Source data is not committed to this repository.
+## Local setup
 
-## Run locally
+### Requirements and configuration
 
-1. Copy `.env.example` to `.env` and adjust credentials if needed.
-2. Start Postgres with `docker compose up -d`.
-3. Create a virtual environment and install the project: `python -m pip install -e .`.
-4. Download and extract the Olist CSVs to `data/raw/`.
-5. Run `python -m ingestion.load_olist`.
+- Python 3.10 or newer (the examples below use 3.11)
+- Docker Desktop or Docker Engine with Compose
+- Node.js 20 or newer for the dashboard
+- A Kaggle account to obtain the public [Olist Brazilian E-Commerce dataset](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce)
 
-The loader creates the `raw` schema and replaces the six raw tables on each run, making reruns deterministic. It loads rows in configurable chunks via SQLAlchemy/pandas. Raw columns are typed to retain practical source fidelity: identifiers and dates are text, numeric measures use numeric types, and reviews/labels remain text. No warehouse keys or relationships are imposed at this layer.
+From the repository root, copy `.env.example` to `.env` and adjust values as needed. The defaults match the local Postgres and Redpanda Compose services. Create a Python environment and install the base project plus the dbt, quality, orchestration, and churn dependencies:
 
-## dbt transformations
+```sh
+python -m venv .venv
+# macOS/Linux
+source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e ".[api,dbt,quality,orchestration]"
+```
 
-The dbt project reads from `raw` and builds models into the `staging`, `intermediate`, and `marts` Postgres schemas. Install its adapter and the raw quality gate with `python -m pip install -e ".[dbt,quality]"`. Copy `dbt_project/profiles.yml.example` to `dbt_project/profiles.yml`, then run these commands from the repository root to validate raw data before building dbt models:
+Start Postgres and Redpanda:
+
+```sh
+docker compose up -d
+docker compose ps
+docker compose exec redpanda rpk topic create olist.order-events
+```
+
+Download and extract the six Olist CSV files (customers, orders, order items, payments, reviews, products) into `data/raw/`. The loader checks the source headers and creates `raw` tables from the declared schema.
+
+```sh
+python -m ingestion.load_olist
+```
+
+### Stream events and validate raw data
+
+Open two terminal sessions with the project virtual environment activated. Start the Postgres consumer in one and the live event generator in the other:
+
+```sh
+python -m ingestion.consume_order_events
+```
+
+```sh
+python -m ingestion.generate_order_events
+```
+
+Let events arrive, then run the raw Great Expectations checkpoint in another terminal. It checks all six source tables plus `raw.streaming_events`, including that the latest event meets `STREAMING_FRESHNESS_MINUTES` (30 minutes by default).
 
 ```sh
 python -m quality.validate_raw
+```
+
+The event generator emits `new_order` and realistic status transitions. Stop either long-running process with Ctrl+C.
+
+### Build and test dbt marts
+
+Copy `dbt_project/profiles.yml.example` to `dbt_project/profiles.yml`. The profile reads local connection settings from `POSTGRES_*` environment variables; these are also in `.env`, which dbt itself does not load automatically. In a shell where those values are available:
+
+```sh
 dbt debug --project-dir dbt_project --profiles-dir dbt_project
 dbt build --project-dir dbt_project --profiles-dir dbt_project
 ```
 
-The profile defaults match the local Compose credentials. For other credentials, define the `POSTGRES_*` environment variables in the shell running dbt; dbt does not automatically load the root `.env` file. The marts use an order-item grain for `fact_orders` so `dim_products`, `dim_customers`, and `dim_date` join cleanly without hiding multi-product orders. Item price and freight measures are additive; order totals are checked in the intermediate order model to avoid repeating an order-level amount on every item line. Schema tests cover key uniqueness, non-null keys, and dimension relationships. Singular tests check positive totals, positive order-line values, and legal streaming status transitions.
+`dbt build` runs the staging, intermediate, and marts models and their schema and singular tests. The `fact_orders` grain is one row per order item, so aggregate its additive item measures when calculating order-level totals.
 
-## Dagster orchestration
+### Train and serve churn predictions
 
-Dagster defines a daily batch asset chain and a five-minute bounded streaming consumer/dbt chain. See [orchestration/README.md](orchestration/README.md) for local startup and Railway/Render persistent-volume setup. The root [Dockerfile](Dockerfile) packages the Dagster UI, daemon, ingestion, quality, and dbt dependencies.
-
-## Customer churn model and API
-
-Train the versioned churn classifier from dbt marts with `python -m api.churn.train --version 1.0.0`, then deploy the FastAPI service using [api/Dockerfile](api/Dockerfile). Feature definitions, model versioning, and `/predict` and `/health` usage are documented in [api/README.md](api/README.md).
-
-## Stream synthetic order events
-
-Local Redpanda starts with Postgres through Compose. In one terminal, start the services and create the topic:
+The training command needs enough order history in the marts to create customer snapshots and forward 90-day churn labels. It saves a semantic-versioned artifact under `api/model_registry/churn/`:
 
 ```sh
-docker compose up -d
-docker compose exec redpanda rpk topic create olist.order-events
+python -m api.churn.train --version 1.0.0
+uvicorn api.app:app --host 0.0.0.0 --port 8000
 ```
 
-Run the consumer in one terminal and the generator in another:
+Check `http://localhost:8000/health`; send the documented RFM/review feature object to `POST /predict`. See [api/README.md](api/README.md) for the feature definition and version details. An Olist CSV snapshot is historical, so model training needs full forward-label history and may reject a dataset that has too little date coverage.
+
+### Run the dashboard
+
+Copy `dashboard/.env.example` to `dashboard/.env.local`. Set `DATABASE_URL` to the same Postgres database and `CHURN_API_URL` to `http://localhost:8000`. After `dbt build`, apply the dashboard read-model SQL once:
 
 ```sh
-python -m ingestion.consume_order_events
-python -m ingestion.generate_order_events
+cd dashboard
+npm install
+# Create dashboard/.env.local from .env.example and set its values.
+# Set DATABASE_URL in this shell (PowerShell: $env:DATABASE_URL = "postgresql://...").
+export DATABASE_URL="postgresql://user:password@host:5432/streamline"
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/dashboard_views.sql
+npm run dev
 ```
 
-The generator emits `new_order` events and realistic transitions through `created`, `approved`, `shipped`, and terminal `delivered` or `canceled` statuses. Tune its pace with `PRODUCER_INTERVAL_SECONDS` and the chance of selecting an active order for a status update with `PRODUCER_STATUS_CHANGE_RATE`. The consumer writes the original event JSON, event fields, Kafka topic/partition/offset, and ingestion timestamp to `raw.streaming_events`. It commits Kafka offsets after the database transaction and uses event IDs to deduplicate replays.
+Open `http://localhost:3000`. The dashboard reads the `marts` schema server-side and displays model scores when the churn API is healthy. The `/api/refresh` route refreshes the dashboard materialized views. [dashboard/README.md](dashboard/README.md) documents Vercel deployment and cron configuration.
 
-## Hosted Kafka settings (Upstash)
+### Run Dagster locally
 
-Upstash Kafka was discontinued; Upstash announced it would stop accepting new Kafka users and new clusters. This connection path is therefore for an existing Upstash Kafka cluster only. See [Upstash's discontinuation announcement](https://upstash.com/blog/workflow-kafka).
+With the Python environment activated and Postgres/Kafka settings configured:
 
-For an existing cluster, create the topic in the Upstash console and copy the broker endpoint, username, and password from its connection details. Put these settings in `.env`:
-
-```dotenv
-KAFKA_BOOTSTRAP_SERVERS=<your-kafka-endpoint>:9092
-KAFKA_TOPIC=olist.order-events
-KAFKA_SECURITY_PROTOCOL=SASL_SSL
-KAFKA_SASL_MECHANISM=SCRAM-SHA-256
-KAFKA_USERNAME=<your-upstash-kafka-username>
-KAFKA_PASSWORD=<your-upstash-kafka-password>
+```sh
+dagster dev -h 0.0.0.0 -p 3000 -m orchestration.definitions
 ```
 
-Both the producer and consumer use these settings. Keep credentials in `.env` and never commit that file. Upstash's Kafka protocol uses SASL authentication; the cluster console provides the actual endpoint and credentials. See [Upstash's Kafka connection example](https://upstash.com/blog/kafka-spark).
+The enabled schedules run the raw-validation/dbt batch pipeline daily and a bounded streaming pipeline every five minutes. Details and persistent-service deployment notes are in [orchestration/README.md](orchestration/README.md).
 
-## Analytics dashboard
+## Automated checks and model deployment
 
-The Next.js App Router dashboard lives in [`dashboard/`](dashboard/README.md). It reads the `marts` schema through the Neon serverless Postgres driver, calls the churn FastAPI service for customer risk scores, and refreshes its indexed materialized views with a six-hour Vercel Cron schedule. Configure `dashboard/.env.local`, run `dbt run`, apply `dashboard/sql/dashboard_views.sql`, then start the dashboard with `npm run dev` from `dashboard/`. Vercel deployment and the Hobby cron cadence caveat are documented in the dashboard README.
+- `.github/workflows/ci.yml` runs on pull requests that touch `dbt_project/` or `quality/`. It starts Postgres, seeds a small CI-only fixture, runs Great Expectations, and only then runs `dbt build` (including dbt tests).
+- `.github/workflows/python-tests.yml` runs API and ingestion unit tests on relevant pull requests.
+- `.github/workflows/weekly-churn-model.yml` runs Mondays at 05:00 UTC (and supports manual dispatch). Configure repository secrets `CHURN_TRAINING_DATABASE_URL` (a Postgres URL whose database has up-to-date marts) and `RENDER_DEPLOY_HOOK_URL`. It trains a new semantic version, builds the API Docker image with that artifact, pushes the versioned image to GitHub Container Registry, and asks Render to deploy it.
+
+For the weekly model deployment, create a Render image-backed web service using `ghcr.io/<owner>/<repository>-churn-api:latest`, configure its runtime environment (including the model registry path if customized), and create a deploy hook. Make the GHCR package public or configure registry credentials in Render. Add the hook URL and a least-privileged database URL as GitHub repository Actions secrets. The workflow uses the Render hook with the newly trained image tag; the [Render image deploy hook documentation](https://render.com/docs/deploy-hooks) describes the supported image-backed deploy flow.
+
+## Hosted Kafka
+
+Local development uses Redpanda through Compose. The earlier Upstash Kafka hosted option has been discontinued for new users; connection details for a previously provisioned compatible Kafka broker can be supplied through `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_SECURITY_PROTOCOL`, `KAFKA_SASL_MECHANISM`, `KAFKA_USERNAME`, and `KAFKA_PASSWORD`. Keep broker credentials in `.env` or service secrets, never in source control.

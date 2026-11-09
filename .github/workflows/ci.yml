@@ -1,9 +1,19 @@
 name: Data pipeline CI
 
 on:
+  pull_request:
+    paths:
+      - "dbt_project/**"
+      - "quality/**"
+      - ".github/workflows/ci.yml"
+      - "pyproject.toml"
   push:
     branches: [main]
-  pull_request:
+    paths:
+      - "dbt_project/**"
+      - "quality/**"
+      - ".github/workflows/ci.yml"
+      - "pyproject.toml"
 
 jobs:
   raw-quality-and-dbt:
