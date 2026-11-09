@@ -149,9 +149,9 @@ The enabled schedules run the raw-validation/dbt batch pipeline daily and a boun
 
 - `.github/workflows/ci.yml` runs on pull requests that touch `dbt_project/` or `quality/`. It starts Postgres, seeds a small CI-only fixture, runs Great Expectations, and only then runs `dbt build` (including dbt tests).
 - `.github/workflows/python-tests.yml` runs API and ingestion unit tests on relevant pull requests.
-- `.github/workflows/weekly-churn-model.yml` runs Mondays at 05:00 UTC (and supports manual dispatch). Configure repository secrets `CHURN_TRAINING_DATABASE_URL` (a Postgres URL whose database has up-to-date marts) and `RENDER_DEPLOY_HOOK_URL`. It trains a new semantic version, builds the API Docker image with that artifact, pushes the versioned image to GitHub Container Registry, and asks Render to deploy it.
+- `.github/workflows/weekly-churn-model.yml` runs Mondays at 05:00 UTC (and supports manual dispatch). Configure repository secrets `CHURN_TRAINING_DATABASE_URL` (a Postgres URL whose database has up-to-date marts), `RAILWAY_TOKEN`, `RAILWAY_PROJECT_ID`, `RAILWAY_ENVIRONMENT_ID`, and `RAILWAY_API_SERVICE_ID`. It trains a new semantic version and deploys the repository—including that model artifact—to the targeted Railway API service.
 
-For the weekly model deployment, create a Render image-backed web service using `ghcr.io/<owner>/<repository>-churn-api:latest`, configure its runtime environment (including the model registry path if customized), and create a deploy hook. Make the GHCR package public or configure registry credentials in Render. Add the hook URL and a least-privileged database URL as GitHub repository Actions secrets. The workflow uses the Render hook with the newly trained image tag; the [Render image deploy hook documentation](https://render.com/docs/deploy-hooks) describes the supported image-backed deploy flow.
+For weekly API deploys, configure the Railway service to use `RAILWAY_DOCKERFILE_PATH=api/Dockerfile`. Create a Railway project token scoped to the production environment and add the token plus project, environment, and API service IDs as GitHub Actions secrets. Railway's CLI supports non-interactive CI deploys with project tokens and explicit service/environment targets ([Railway CLI deploy docs](https://docs.railway.com/cli/deploying)).
 
 ## Hosted Kafka
 
