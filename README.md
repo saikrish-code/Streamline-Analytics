@@ -29,3 +29,38 @@ The six source CSVs are expected to use the Olist headers documented in `ingesti
 5. Run `python -m ingestion.load_olist`.
 
 The loader creates the `raw` schema and replaces the six raw tables on each run, making reruns deterministic. It loads rows in configurable chunks via SQLAlchemy/pandas. Raw columns are typed to retain practical source fidelity: identifiers and dates are text, numeric measures use numeric types, and reviews/labels remain text. No warehouse keys or relationships are imposed at this layer.
+
+## Stream synthetic order events
+
+Local Redpanda starts with Postgres through Compose. In one terminal, start the services and create the topic:
+
+```sh
+docker compose up -d
+docker compose exec redpanda rpk topic create olist.order-events
+```
+
+Run the consumer in one terminal and the generator in another:
+
+```sh
+python -m ingestion.consume_order_events
+python -m ingestion.generate_order_events
+```
+
+The generator emits `new_order` events and realistic transitions through `created`, `approved`, `shipped`, and terminal `delivered` or `canceled` statuses. Tune its pace with `PRODUCER_INTERVAL_SECONDS` and the chance of selecting an active order for a status update with `PRODUCER_STATUS_CHANGE_RATE`. The consumer writes the original event JSON, event fields, Kafka topic/partition/offset, and ingestion timestamp to `raw.streaming_events`. It commits Kafka offsets after the database transaction and uses event IDs to deduplicate replays.
+
+## Hosted Kafka settings (Upstash)
+
+Upstash Kafka was discontinued; Upstash announced it would stop accepting new Kafka users and new clusters. This connection path is therefore for an existing Upstash Kafka cluster only. See [Upstash's discontinuation announcement](https://upstash.com/blog/workflow-kafka).
+
+For an existing cluster, create the topic in the Upstash console and copy the broker endpoint, username, and password from its connection details. Put these settings in `.env`:
+
+```dotenv
+KAFKA_BOOTSTRAP_SERVERS=<your-kafka-endpoint>:9092
+KAFKA_TOPIC=olist.order-events
+KAFKA_SECURITY_PROTOCOL=SASL_SSL
+KAFKA_SASL_MECHANISM=SCRAM-SHA-256
+KAFKA_USERNAME=<your-upstash-kafka-username>
+KAFKA_PASSWORD=<your-upstash-kafka-password>
+```
+
+Both the producer and consumer use these settings. Keep credentials in `.env` and never commit that file. Upstash's Kafka protocol uses SASL authentication; the cluster console provides the actual endpoint and credentials. See [Upstash's Kafka connection example](https://upstash.com/blog/kafka-spark).
