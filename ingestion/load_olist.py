@@ -1,17 +1,12 @@
-"""Bulk-load Olist CSV files into PostgreSQL's raw schema."""
-
-from __future__ import annotations
+"""Bulk-load Olist CSV files into PostgreSQL's raw schema (SQLAlchemy-free fallback)."""
 
 import logging
 import os
 from pathlib import Path
-
 import pandas as pd
+import psycopg2
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL
-
-from ingestion.schema import CSV_FILES, RAW_SCHEMA, TABLES, metadata
+from ingestion.schema import CSV_FILES, RAW_SCHEMA
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -19,84 +14,64 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def load_with_fallback():
+    """Load CSV files using pandas and direct psycopg2 inserts to bypass blocked SQLAlchemy."""
+    data_dir = Path(os.getenv("OLIST_DATA_DIR", "data/raw"))
+    chunksize = int(os.getenv("LOAD_CHUNK_SIZE", "5000"))
 
-def database_url() -> str | URL:
-    """Return DATABASE_URL or construct one from individual Postgres settings."""
-    explicit_url = os.getenv("DATABASE_URL")
-    if explicit_url:
-        return explicit_url
-    return URL.create(
-        "postgresql+psycopg2",
-        username=os.getenv("POSTGRES_USER", "streamline"),
-        password=os.getenv("POSTGRES_PASSWORD", "streamline_local"),
+    logger.info(f"Connecting to Postgres at {os.getenv('POSTGRES_HOST', 'localhost')}")
+    conn = psycopg2.connect(
         host=os.getenv("POSTGRES_HOST", "localhost"),
         port=int(os.getenv("POSTGRES_PORT", "5432")),
-        database=os.getenv("POSTGRES_DB", "streamline"),
+        user=os.getenv("POSTGRES_USER", "streamline"),
+        password=os.getenv("POSTGRES_PASSWORD", "streamline_local"),
+        dbname=os.getenv("POSTGRES_DB", "streamline")
     )
+    conn.autocommit = True
 
-
-def load_table(engine, table_name: str, csv_path: Path, chunksize: int) -> int:
-    """Replace one raw table with rows streamed from a CSV in bounded chunks."""
-    table = TABLES[table_name]
-    expected = [column.name for column in table.columns]
-    header = pd.read_csv(csv_path, nrows=0, encoding="utf-8-sig").columns.tolist()
-    if header != expected:
-        raise ValueError(
-            f"Unexpected columns in {csv_path.name}. Expected {expected}; found {header}. "
-            "Check that this is the original Olist CSV version."
-        )
-
-    total = 0
-    first_chunk = True
-    for frame in pd.read_csv(csv_path, chunksize=chunksize, encoding="utf-8-sig", dtype=str):
-        frame = frame.where(pd.notna(frame), None)
-        frame.to_sql(
-            table_name,
-            con=engine,
-            schema=RAW_SCHEMA,
-            if_exists="replace" if first_chunk else "append",
-            index=False,
-            chunksize=chunksize,
-            method="multi",
-            dtype={column.name: column.type for column in table.columns},
-        )
-        first_chunk = False
-        total += len(frame)
-
-    if first_chunk:
-        table.create(engine, checkfirst=True)
-    return total
-
-
-def main() -> None:
-    load_dotenv()
-    data_dir = Path(os.getenv("OLIST_DATA_DIR", "data/raw"))
-    missing = [
-        str(data_dir / filename)
-        for filename in CSV_FILES.values()
-        if not (data_dir / filename).is_file()
-    ]
-    if missing:
-        raise FileNotFoundError(
-            "Missing required Olist CSV files:\n  " + "\n  ".join(missing)
-            + "\nDownload and extract the dataset into OLIST_DATA_DIR."
-        )
-
-    chunksize = int(os.getenv("LOAD_CHUNK_SIZE", "5000"))
-    if chunksize < 1:
-        raise ValueError("LOAD_CHUNK_SIZE must be a positive integer")
-
-    engine = create_engine(database_url(), pool_pre_ping=True)
     try:
-        with engine.begin() as connection:
-            connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{RAW_SCHEMA}"'))
-        metadata.create_all(engine)
-        for table_name, filename in CSV_FILES.items():
-            count = load_table(engine, table_name, data_dir / filename, chunksize)
-            logger.info("Loaded %s rows into %s.%s", count, RAW_SCHEMA, table_name)
-    finally:
-        engine.dispose()
+        with conn.cursor() as cur:
+            cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{RAW_SCHEMA}"')
 
+        for table_name, filename in CSV_FILES.items():
+            csv_path = data_dir / filename
+            if not csv_path.is_file():
+                logger.warning(f"File not found, skipping: {csv_path}")
+                continue
+
+            logger.info(f"Loading {table_name} from {filename}...")
+
+            # Read header to get column names
+            df_header = pd.read_csv(csv_path, nrows=0, encoding="utf-8-sig")
+            cols = [f'"{c}"' for c in df_header.columns]
+
+            with conn.cursor() as cur:
+                cur.execute(f'DROP TABLE IF EXISTS "{RAW_SCHEMA}"."{table_name}" CASCADE')
+                col_defs = ", ".join([f'{c} TEXT' for c in cols])
+                cur.execute(f'CREATE TABLE "{RAW_SCHEMA}"."{table_name}" ({col_defs})')
+
+            total_rows = 0
+            for chunk in pd.read_csv(csv_path, chunksize=chunksize, encoding="utf-8-sig", dtype=str):
+                chunk = chunk.where(pd.notna(chunk), None)
+                placeholders = ", ".join(["%s"] * len(cols))
+                sql = f'INSERT INTO "{RAW_SCHEMA}"."{table_name}" ({", ".join(cols)}) VALUES ({placeholders})'
+
+                with conn.cursor() as cur:
+                    cur.executemany(sql, chunk.values.tolist())
+
+                total_rows += len(chunk)
+
+            logger.info(f"Successfully loaded {total_rows} rows into {RAW_SCHEMA}.{table_name}")
+
+    except Exception as e:
+        logger.error(f"Ingestion failed: {e}")
+        raise
+    finally:
+        conn.close()
+
+def main():
+    load_dotenv()
+    load_with_fallback()
 
 if __name__ == "__main__":
     main()

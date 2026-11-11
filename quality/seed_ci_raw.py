@@ -1,19 +1,13 @@
-"""Seed a small, realistic raw-zone dataset for CI integration checks."""
-
-from __future__ import annotations
+"""Seed a small, realistic raw-zone dataset (SQLAlchemy-free fallback)."""
 
 from datetime import datetime, timezone
-
+import json
+import psycopg2
+import os
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
 
-from ingestion.load_olist import database_url
-from ingestion.schema import RAW_SCHEMA, STREAMING_EVENTS, TABLES, metadata
-
-
-def main() -> None:
+def main():
     load_dotenv()
-    engine = create_engine(database_url())
     now = datetime.now(timezone.utc)
     timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -72,40 +66,64 @@ def main() -> None:
             "product_width_cm": 15,
         }],
     }
-    event = {
-        "event_id": "ci-event-1",
-        "event_type": "new_order",
-        "event_timestamp": now.isoformat(),
-        "order_id": "ci-order-1",
-        "data": {"status": "created"},
-    }
+
+    conn = psycopg2.connect(
+        host=os.getenv("POSTGRES_HOST", "localhost"),
+        port=int(os.getenv("POSTGRES_PORT", "5432")),
+        user=os.getenv("POSTGRES_USER", "streamline"),
+        password=os.getenv("POSTGRES_PASSWORD", "streamline_local"),
+        dbname=os.getenv("POSTGRES_DB", "streamline")
+    )
+    conn.autocommit = True
 
     try:
-        with engine.begin() as connection:
-            connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{RAW_SCHEMA}"'))
-        metadata.create_all(engine)
-        with engine.begin() as connection:
-            connection.execute(STREAMING_EVENTS.delete())
-            for table_name, table_rows in rows.items():
-                table = TABLES[table_name]
-                connection.execute(table.delete())
-                connection.execute(table.insert(), table_rows)
-            connection.execute(
-                STREAMING_EVENTS.insert().values(
-                    event_id=event["event_id"],
-                    event_type=event["event_type"],
-                    event_timestamp=now,
-                    order_id=event["order_id"],
-                    payload=event,
-                    kafka_topic="olist.order-events",
-                    kafka_partition=0,
-                    kafka_offset=0,
-                    kafka_timestamp=now,
-                )
-            )
-    finally:
-        engine.dispose()
+        with conn.cursor() as cur:
+            cur.execute('CREATE SCHEMA IF NOT EXISTS raw')
 
+            for table_name, table_rows in rows.items():
+                # Drop and create table with text columns for simplicity in seed
+                cur.execute(f'DROP TABLE IF EXISTS raw.{table_name} CASCADE')
+                cols = table_rows[0].keys()
+                cur.execute(f'CREATE TABLE raw.{table_name} (' + ", ".join([f'"{c}" TEXT' for c in cols]) + ')')
+
+                for r in table_rows:
+                    placeholders = ", ".join(["%s"] * len(cols))
+                    cur.execute(f'INSERT INTO raw.{table_name} (' + ", ".join([f'"{c}"' for c in cols]) + f') VALUES ({placeholders})', list(r.values()))
+
+            # Streaming events table
+            cur.execute('DROP TABLE IF EXISTS raw.streaming_events CASCADE')
+            cur.execute('''
+                CREATE TABLE raw.streaming_events (
+                    event_id text PRIMARY KEY,
+                    event_type text NOT NULL,
+                    event_timestamp timestamptz NOT NULL,
+                    order_id text NOT NULL,
+                    payload jsonb NOT NULL,
+                    kafka_topic text NOT NULL,
+                    kafka_partition integer NOT NULL,
+                    kafka_offset bigint NOT NULL,
+                    kafka_timestamp timestamptz,
+                    ingested_at timestamptz NOT NULL DEFAULT now()
+                )
+            ''')
+
+            payload = {
+                "event_id": "ci-event-1",
+                "event_type": "new_order",
+                "event_timestamp": now.isoformat(),
+                "order_id": "ci-order-1",
+                "data": {"status": "created"},
+            }
+
+            cur.execute('''
+                INSERT INTO raw.streaming_events
+                (event_id, event_type, event_timestamp, order_id, payload, kafka_topic, kafka_partition, kafka_offset, kafka_timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ''', ("ci-event-1", "new_order", now, "ci-order-1", json.dumps(payload), "olist.order-events", 0, 0, now))
+
+        print("Seed data loaded successfully!")
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
     main()

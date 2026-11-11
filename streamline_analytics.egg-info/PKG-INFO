@@ -1,0 +1,24 @@
+Metadata-Version: 2.4
+Name: streamline-analytics
+Version: 0.1.0
+Summary: A modular analytics pipeline for the Olist Brazilian e-commerce dataset
+Requires-Python: >=3.10
+Requires-Dist: SQLAlchemy<3.0,>=2.0
+Requires-Dist: psycopg2-binary<3.0,>=2.9
+Requires-Dist: pandas<3.0,>=2.1
+Requires-Dist: python-dotenv<2.0,>=1.0
+Requires-Dist: kafka-python<3.0,>=2.0.2
+Provides-Extra: dev
+Requires-Dist: ruff<1.0,>=0.5; extra == "dev"
+Provides-Extra: dbt
+Requires-Dist: dbt-postgres<2.0,>=1.8; extra == "dbt"
+Provides-Extra: quality
+Requires-Dist: great_expectations<2.0,>=1.24; extra == "quality"
+Provides-Extra: orchestration
+Requires-Dist: dagster<2.0,>=1.10; extra == "orchestration"
+Requires-Dist: dagster-webserver<2.0,>=1.10; extra == "orchestration"
+Provides-Extra: api
+Requires-Dist: fastapi<1.0,>=0.115; extra == "api"
+Requires-Dist: uvicorn[standard]<1.0,>=0.30; extra == "api"
+Requires-Dist: scikit-learn<2.0,>=1.5; extra == "api"
+Requires-Dist: joblib<2.0,>=1.4; extra == "api"
