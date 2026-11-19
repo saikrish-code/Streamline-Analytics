@@ -4,14 +4,35 @@ import { getSql } from "@/lib/db";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const sql = getSql();
-    const [revenue, products, funnel, metrics, candidates] = await Promise.all([
-      sql`select to_char(date_day, 'Mon DD') as day, revenue::float8 as revenue from marts.dashboard_revenue_daily order by date_key desc limit 90`,
-      sql`select initcap(replace(category_name, '_', ' ')) as product, revenue::float8 as revenue from marts.dashboard_product_revenue order by revenue desc limit 6`,
+    const params = new URL(request.url).searchParams;
+    const daysParam = Number(params.get("days"));
+    const days = [30, 90, 180, 365].includes(daysParam) ? daysParam : 0; // 0 = all time
+    const category = params.get("category")?.slice(0, 80) || null;
+    // Windows are anchored to the latest order in the data (Olist is a historical snapshot).
+    const inWindow = sql`(${days} = 0 or f.purchased_at::date > (select max(purchased_at)::date from marts.fact_orders) - ${days}::int)`;
+    const inCategory = sql`(${category}::text is null or coalesce(nullif(p.category_name, ''), 'uncategorized') = ${category})`;
+    const [revenue, products, funnel, metrics, categories, candidates] = await Promise.all([
+      sql`select to_char(f.purchased_at::date, 'YYYY-MM-DD') as iso, to_char(f.purchased_at::date, 'Mon DD') as day,
+            sum(f.item_total)::float8 as revenue, count(distinct f.order_id)::int as orders
+          from marts.fact_orders f left join marts.dim_products p using (product_id)
+          where f.order_status = 'delivered' and ${inWindow} and ${inCategory}
+          group by f.purchased_at::date order by f.purchased_at::date`,
+      sql`select initcap(replace(coalesce(nullif(p.category_name, ''), 'uncategorized'), '_', ' ')) as product,
+            coalesce(nullif(p.category_name, ''), 'uncategorized') as category_key,
+            sum(f.item_total)::float8 as revenue, count(distinct f.order_id)::int as orders
+          from marts.fact_orders f left join marts.dim_products p using (product_id)
+          where f.order_status = 'delivered' and ${inWindow}
+          group by 2, 1 order by revenue desc limit 8`,
       sql`select stage, orders::int as orders from marts.dashboard_order_funnel order by case stage when 'Placed' then 1 when 'Approved' then 2 when 'Shipped' then 3 else 4 end`,
-      sql`select coalesce(sum(item_total),0)::float8 as revenue, count(distinct order_id)::int as orders, count(distinct customer_unique_id)::int as customers from marts.fact_orders where order_status = 'delivered'`,
+      sql`select coalesce(sum(f.item_total),0)::float8 as revenue, count(distinct f.order_id)::int as orders, count(distinct f.customer_unique_id)::int as customers
+          from marts.fact_orders f left join marts.dim_products p using (product_id)
+          where f.order_status = 'delivered' and ${inWindow} and ${inCategory}`,
+      sql`select coalesce(nullif(category_name, ''), 'uncategorized') as key,
+            initcap(replace(coalesce(nullif(category_name, ''), 'uncategorized'), '_', ' ')) as label
+          from marts.dashboard_product_revenue order by revenue desc limit 40`,
       sql`with customer_orders as (
         select customer_unique_id, order_id, min(purchased_at) as purchased_at,
           sum(item_total)::float8 as order_total
@@ -60,16 +81,15 @@ export async function GET() {
         if (!response.ok) throw new Error("Churn prediction failed");
         const prediction = await response.json();
         modelVersion = prediction.model_version;
-        return { customer_id: c.customer_unique_id, cohort: c.cohort, recency_days: c.recency_days, frequency: c.frequency, churn_probability: prediction.churn_probability };
+        return { customer_id: c.customer_unique_id, cohort: c.cohort, recency_days: c.recency_days, frequency: c.frequency, monetary: c.monetary, review_score: c.mean_review_score_180d, churn_probability: prediction.churn_probability };
       }));
       const predictions = scored.filter((s): s is PromiseFulfilledResult<any> => s.status === "fulfilled").map(s => s.value).sort((a,b) => b.churn_probability - a.churn_probability);
       atRiskCount = predictions.filter(r => r.churn_probability >= 0.65).length;
-      risk = predictions.slice(0,10);
+      risk = predictions.slice(0,25);
     }
 
-    const reversedRevenue = [...revenue].reverse();
     return NextResponse.json({
-      revenue: reversedRevenue, products, funnel, metrics: { ...metrics[0], at_risk: atRiskCount },
+      revenue, products, funnel, categories, filters: { days, category }, metrics: { ...metrics[0], at_risk: atRiskCount },
       risk, model_version: modelVersion, updated_at: new Date().toISOString(),
     }, { headers: { "Cache-Control": "private, max-age=60, stale-while-revalidate=120" } });
   } catch (error) {
