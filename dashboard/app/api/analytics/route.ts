@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
+import { scoreChurn, CHURN_MODEL_VERSION } from "@/lib/churn";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -64,29 +65,36 @@ export async function GET(request: Request) {
     let modelVersion: string | null = null;
     let risk: Record<string, unknown>[] = [];
     let atRiskCount = 0;
-    if (endpoint) {
-      const scored = await Promise.allSettled(candidates.map(async (c: any) => {
+    const toFeatures = (c: any) => ({
+      recency_days: c.recency_days, frequency_180d: c.frequency, monetary_180d: c.monetary,
+      average_order_value_180d: c.monetary / c.frequency,
+      mean_review_sentiment_180d: c.mean_review_sentiment_180d,
+      negative_review_share_180d: c.negative_review_share_180d,
+      mean_review_score_180d: c.mean_review_score_180d,
+      review_count_180d: c.review_count_180d,
+    });
+    // Remote churn API if CHURN_API_URL is set; otherwise score in-process with the exported model.
+    const scored = await Promise.allSettled(candidates.map(async (c: any) => {
+      let probability: number;
+      if (endpoint) {
         const response = await fetch(`${endpoint}/predict`, {
           method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            recency_days: c.recency_days, frequency_180d: c.frequency, monetary_180d: c.monetary,
-            average_order_value_180d: c.monetary / c.frequency,
-            mean_review_sentiment_180d: c.mean_review_sentiment_180d,
-            negative_review_share_180d: c.negative_review_share_180d,
-            mean_review_score_180d: c.mean_review_score_180d,
-            review_count_180d: c.review_count_180d,
-          }),
+          body: JSON.stringify(toFeatures(c)),
           signal: AbortSignal.timeout(5000), cache: "no-store",
         });
         if (!response.ok) throw new Error("Churn prediction failed");
         const prediction = await response.json();
         modelVersion = prediction.model_version;
-        return { customer_id: c.customer_unique_id, cohort: c.cohort, recency_days: c.recency_days, frequency: c.frequency, monetary: c.monetary, review_score: c.mean_review_score_180d, churn_probability: prediction.churn_probability };
-      }));
-      const predictions = scored.filter((s): s is PromiseFulfilledResult<any> => s.status === "fulfilled").map(s => s.value).sort((a,b) => b.churn_probability - a.churn_probability);
-      atRiskCount = predictions.filter(r => r.churn_probability >= 0.65).length;
-      risk = predictions.slice(0,25);
-    }
+        probability = prediction.churn_probability;
+      } else {
+        probability = scoreChurn(toFeatures(c));
+        modelVersion = CHURN_MODEL_VERSION;
+      }
+      return { customer_id: c.customer_unique_id, cohort: c.cohort, recency_days: c.recency_days, frequency: c.frequency, monetary: c.monetary, review_score: c.mean_review_score_180d, churn_probability: probability };
+    }));
+    const predictions = scored.filter((s): s is PromiseFulfilledResult<any> => s.status === "fulfilled").map(s => s.value).sort((a,b) => b.churn_probability - a.churn_probability);
+    atRiskCount = predictions.filter(r => r.churn_probability >= 0.65).length;
+    risk = predictions.slice(0,25);
 
     return NextResponse.json({
       revenue, products, funnel, categories, filters: { days, category }, metrics: { ...metrics[0], at_risk: atRiskCount },

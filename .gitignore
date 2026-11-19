@@ -14,3 +14,5 @@ dashboard/node_modules/
 dashboard/.next/
 dashboard/.vercel/
 dashboard/.env.local
+.neon
+node_modules/
