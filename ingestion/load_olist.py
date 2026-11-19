@@ -3,6 +3,7 @@
 import logging
 import os
 from pathlib import Path
+from urllib.parse import quote_plus
 import pandas as pd
 import psycopg2
 from dotenv import load_dotenv
@@ -13,6 +14,21 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+def database_url() -> str:
+    """Return the SQLAlchemy URL for the configured Postgres database."""
+    load_dotenv()
+    host = os.getenv("POSTGRES_HOST", "localhost")
+    explicit = os.getenv("DATABASE_URL")
+    # POSTGRES_* wins when set so containers can override the host-oriented .env URL.
+    if explicit and not os.getenv("POSTGRES_HOST"):
+        return explicit.replace("postgresql://", "postgresql+psycopg2://", 1) if explicit.startswith("postgresql://") else explicit
+    user = quote_plus(os.getenv("POSTGRES_USER", "streamline"))
+    password = quote_plus(os.getenv("POSTGRES_PASSWORD", "streamline_local"))
+    port = os.getenv("POSTGRES_PORT", "5432")
+    db = os.getenv("POSTGRES_DB", "streamline")
+    return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}"
+
 
 def load_with_fallback():
     """Load CSV files using pandas and direct psycopg2 inserts to bypass blocked SQLAlchemy."""
@@ -33,7 +49,10 @@ def load_with_fallback():
         with conn.cursor() as cur:
             cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{RAW_SCHEMA}"')
 
+        only = {t.strip() for t in os.getenv("OLIST_TABLES", "").split(",") if t.strip()}
         for table_name, filename in CSV_FILES.items():
+            if only and table_name not in only:
+                continue
             csv_path = data_dir / filename
             if not csv_path.is_file():
                 logger.warning(f"File not found, skipping: {csv_path}")
@@ -43,7 +62,9 @@ def load_with_fallback():
 
             # Read header to get column names
             df_header = pd.read_csv(csv_path, nrows=0, encoding="utf-8-sig")
-            cols = [f'"{c}"' for c in df_header.columns]
+            # The public Olist CSV misspells these two product columns.
+            renames = {"product_name_lenght": "product_name_length", "product_description_lenght": "product_description_length"}
+            cols = [f'"{renames.get(c, c)}"' for c in df_header.columns]
 
             with conn.cursor() as cur:
                 cur.execute(f'DROP TABLE IF EXISTS "{RAW_SCHEMA}"."{table_name}" CASCADE')
@@ -52,7 +73,7 @@ def load_with_fallback():
 
             total_rows = 0
             for chunk in pd.read_csv(csv_path, chunksize=chunksize, encoding="utf-8-sig", dtype=str):
-                chunk = chunk.where(pd.notna(chunk), None)
+                chunk = chunk.astype(object).where(pd.notna(chunk), None)
                 placeholders = ", ".join(["%s"] * len(cols))
                 sql = f'INSERT INTO "{RAW_SCHEMA}"."{table_name}" ({", ".join(cols)}) VALUES ({placeholders})'
 

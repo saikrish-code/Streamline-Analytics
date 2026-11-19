@@ -1,0 +1,47 @@
+{
+  "churn_definition": "No non-canceled order in the 90 days after a customer snapshot.",
+  "churn_rate": 0.9917491979550297,
+  "created_at_utc": "2026-11-19T06:32:08.970732+00:00",
+  "decision_threshold": 0.5,
+  "feature_columns": [
+    "recency_days",
+    "frequency_180d",
+    "monetary_180d",
+    "average_order_value_180d",
+    "mean_review_sentiment_180d",
+    "negative_review_share_180d",
+    "mean_review_score_180d",
+    "review_count_180d"
+  ],
+  "label_horizon_days": 90,
+  "lookback_days": 180,
+  "metrics": {
+    "accuracy": 0.708032955715757,
+    "average_precision": 0.9946303259180214,
+    "f1": 0.8283915618284723,
+    "precision": 0.9943688238713427,
+    "recall": 0.7098974633859562,
+    "roc_auc": 0.6085949151985744
+  },
+  "model_name": "olist_customer_churn",
+  "model_type": "scikit-learn Pipeline with LogisticRegression",
+  "model_version": "v1.0.0",
+  "order_date_max": "2018-09-03",
+  "order_date_min": "2016-09-04",
+  "review_sentiment_definition": "Mean normalized review score (score - 3) / 2, clipped to [-1, 1].",
+  "snapshot_step_days": 30,
+  "split_strategy": "latest_time_snapshots",
+  "target": "churned_next_90d",
+  "test_examples": 116520,
+  "test_snapshot_min": "2018-03-28",
+  "train_snapshot_max": "2018-02-26",
+  "training_examples": 241627,
+  "versions": {
+    "joblib": "1.6.0",
+    "numpy": "2.4.6",
+    "pandas": "3.1.1",
+    "python": "3.11.18",
+    "scikit_learn": "1.9.1",
+    "scipy": "1.17.1"
+  }
+}

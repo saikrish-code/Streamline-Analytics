@@ -7,23 +7,21 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   // Simple secret-based protection for Vercel Cron
   const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!process.env.CRON_SECRET || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
     const sql = getSql();
-    // Drop and recreate materialized views
-    await sql`DROP MATERIALIZED VIEW IF EXISTS marts.dashboard_revenue_daily`;
-    await sql`DROP MATERIALIZED VIEW IF EXISTS marts.dashboard_product_revenue`;
-    await sql`DROP MATERIALIZED VIEW IF EXISTS marts.dashboard_order_funnel`;
-    // Apply fresh views from SQL file
-    const { readFileSync } = await import('fs');
-    const { resolve } = await import('path');
-    const sqlContent = readFileSync(resolve(__dirname, '..', '..', 'sql', 'dashboard_views.sql'), 'utf-8');
-    // Execute SQL in chunks (simplified for readability)
-    await sql`SET statement_timeout = '5min'`;
-    await sql`${sqlContent}`;
+    // Ensure the views exist (idempotent), then refresh them in place so
+    // readers never see a missing view if the refresh fails part-way.
+    const { readFileSync } = await import("fs");
+    const { join } = await import("path");
+    const sqlContent = readFileSync(join(process.cwd(), "sql", "dashboard_views.sql"), "utf-8");
+    await sql.unsafe(sqlContent);
+    for (const view of ["dashboard_revenue_daily", "dashboard_product_revenue", "dashboard_order_funnel"]) {
+      await sql.unsafe(`refresh materialized view marts.${view}`);
+    }
 
     return NextResponse.json({ message: "Dashboard views refreshed successfully", timestamp: new Date().toISOString() });
   } catch (error) {
